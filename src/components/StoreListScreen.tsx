@@ -101,7 +101,14 @@ export const StoreListScreen: React.FC<StoreListScreenProps> = ({
     // Sort
     switch (selectedSort) {
       case 'nearest':
-        result.sort((a, b) => (a.distance || 0) - (b.distance || 0));
+        result.sort((a, b) => {
+          if (a.distance === undefined && b.distance === undefined) {
+            return (b.id || '').localeCompare(a.id || '');
+          }
+          if (a.distance === undefined) return 1;
+          if (b.distance === undefined) return -1;
+          return a.distance - b.distance;
+        });
         break;
       case 'unvisited':
         result.sort((a, b) => (a.visit_count || 0) - (b.visit_count || 0));

@@ -10,6 +10,7 @@ import {
   StorePhoto,
 } from './types';
 import { FieldStorageService } from './services/storage';
+import { useGeolocation } from './hooks/useGeolocation';
 import { toast } from './hooks/useToast';
 
 // Core Components
@@ -37,7 +38,6 @@ type AppActiveTab = NavigationTab | 'cockpit' | 'reports' | 'sync';
 export default function App() {
   // Application State
   const [activeTab, setActiveTab] = useState<AppActiveTab>('home');
-  const [userLocation, setUserLocation] = useState<UserLocation>(FieldStorageService.getUserLocation());
   const [connectionState, setConnectionState] = useState<ConnectionState>(FieldStorageService.getConnectionState());
   const [stores, setStores] = useState<Store[]>([]);
   const [visits, setVisits] = useState<Visit[]>([]);
@@ -52,6 +52,17 @@ export default function App() {
   const [isAddStoreOpen, setIsAddStoreOpen] = useState(false);
   const [mapTargetStore, setMapTargetStore] = useState<Store | null>(null);
 
+  // Live Geolocation
+  const {
+    location: currentGpsLocation,
+    status: _gpsStatus,
+    errorMessage: _gpsErrorMessage,
+    errorCode: _gpsErrorCode,
+    refreshLocation: refreshGpsLocation,
+  } = useGeolocation();
+
+  const [userLocation, setUserLocation] = useState<UserLocation>(currentGpsLocation);
+
   // Sync / Refresh Data
   const refreshData = useCallback(() => {
     const loc = FieldStorageService.getUserLocation();
@@ -63,19 +74,41 @@ export default function App() {
     setConnectionState(FieldStorageService.getConnectionState());
   }, []);
 
-  // Initial Data Load & Watch GPS
+  // Initialize DB and subscribe to storage updates
   useEffect(() => {
-    refreshData();
+    let isMounted = true;
+    const initApp = async () => {
+      try {
+        await FieldStorageService.init();
+        if (isMounted) {
+          refreshData();
+        }
+      } catch (err) {
+        console.error('FieldStorageService init error:', err);
+      }
+    };
+    initApp();
 
-    // Check GPS updates every 15 seconds
-    const interval = setInterval(() => {
-      const loc = FieldStorageService.getUserLocation();
-      setUserLocation(loc);
-      setStores(FieldStorageService.getStores(loc));
-    }, 15000);
+    const unsubscribe = FieldStorageService.subscribe(() => {
+      if (isMounted) {
+        refreshData();
+      }
+    });
 
-    return () => clearInterval(interval);
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
   }, [refreshData]);
+
+  // Synchronize live GPS with Storage and distance calculations
+  useEffect(() => {
+    if (currentGpsLocation) {
+      FieldStorageService.setUserLocation(currentGpsLocation);
+      setUserLocation(currentGpsLocation);
+      setStores(FieldStorageService.getStores(currentGpsLocation));
+    }
+  }, [currentGpsLocation]);
 
   // Toggle connection state (online/offline)
   const handleToggleConnection = () => {
@@ -91,41 +124,61 @@ export default function App() {
   };
 
   // Add new store
-  const handleSaveNewStore = (storeData: Omit<Store, 'id' | 'created_at' | 'updated_at'>) => {
-    const created = FieldStorageService.addStore(storeData);
-    setIsAddStoreOpen(false);
-    refreshData();
-    setSelectedStore(created);
-    toast.success(`فروشگاه «${created.name}» با موفقیت ثبت شد.`);
+  const handleSaveNewStore = async (storeData: Omit<Store, 'id' | 'created_at' | 'updated_at'>) => {
+    try {
+      const created = await FieldStorageService.saveStoreAsync(storeData);
+      setIsAddStoreOpen(false);
+      refreshData();
+      setSelectedStore(created);
+      toast.success(`فروشگاه «${created.name}» با موفقیت ثبت شد.`);
+    } catch (err: any) {
+      console.error('Failed to create store:', err);
+      toast.error(`خطا در ثبت فروشگاه در پایگاه داده: ${err?.message || 'خطای پایگاه داده'}`);
+    }
   };
 
   // Edit and update store
-  const handleSaveEditedStore = (updatedStore: Store) => {
-    FieldStorageService.saveStore(updatedStore);
-    setEditingStore(null);
-    refreshData();
-    setSelectedStore(updatedStore);
-    toast.success('مشخصات فروشگاه با موفقیت به‌روزرسانی شد.');
+  const handleSaveEditedStore = async (updatedStore: Store) => {
+    try {
+      const saved = await FieldStorageService.saveStoreAsync(updatedStore);
+      setEditingStore(null);
+      refreshData();
+      setSelectedStore(saved);
+      toast.success('مشخصات فروشگاه با موفقیت به‌روزرسانی شد.');
+    } catch (err: any) {
+      console.error('Failed to update store:', err);
+      toast.error(`خطا در به‌روزرسانی فروشگاه: ${err?.message || 'خطای پایگاه داده'}`);
+    }
   };
 
   // Delete store
-  const handleDeleteStore = (storeId: string) => {
-    FieldStorageService.deleteStore(storeId);
-    setEditingStore(null);
-    setSelectedStore(null);
-    refreshData();
-    toast.info('فروشگاه و کلیه سوابق ویزیت آن از پایگاه محلی حذف شد.');
+  const handleDeleteStore = async (storeId: string) => {
+    try {
+      await FieldStorageService.deleteStoreAsync(storeId);
+      setEditingStore(null);
+      setSelectedStore(null);
+      refreshData();
+      toast.info('فروشگاه و کلیه سوابق ویزیت آن از پایگاه محلی حذف شد.');
+    } catch (err: any) {
+      console.error('Failed to delete store:', err);
+      toast.error(`خطا در حذف فروشگاه: ${err?.message || 'خطای پایگاه داده'}`);
+    }
   };
 
   // Attach real photo to store
-  const handleSavePhoto = (photo: { url: string; caption?: string; type: StorePhoto['type'] }) => {
+  const handleSavePhoto = async (photo: { url: string; caption?: string; type: StorePhoto['type'] }) => {
     if (!photoStoreId) return;
-    FieldStorageService.addPhotoToStoreAsync(photoStoreId, photo.url, photo.caption, photo.type);
-    toast.success('تصویر با موفقیت در پرونده فروشگاه الصاق شد.');
-    setPhotoStoreId(null);
-    refreshData();
-    const updated = FieldStorageService.getStores().find((s) => s.id === photoStoreId);
-    if (updated) setSelectedStore(updated);
+    try {
+      await FieldStorageService.addPhotoToStoreAsync(photoStoreId, photo.url, photo.caption, photo.type);
+      toast.success('تصویر با موفقیت در پرونده فروشگاه الصاق شد.');
+      setPhotoStoreId(null);
+      refreshData();
+      const updated = FieldStorageService.getStores().find((s) => s.id === photoStoreId);
+      if (updated) setSelectedStore(updated);
+    } catch (err: any) {
+      console.error('Failed to add photo:', err);
+      toast.error('خطا در الصاق تصویر');
+    }
   };
 
   // Remove photo from store
@@ -138,17 +191,26 @@ export default function App() {
   };
 
   // Record visit
-  const handleSaveVisit = (visitData: any) => {
-    FieldStorageService.addVisit(visitData);
-    setVisitingStore(null);
-    refreshData();
-    toast.success('گزارش ویزیت با موفقیت در پایگاه محلی ثبت شد.');
+  const handleSaveVisit = async (visitData: any) => {
+    try {
+      await FieldStorageService.addVisitAsync(visitData);
+      setVisitingStore(null);
+      refreshData();
+      toast.success('گزارش ویزیت با موفقیت در پایگاه محلی ثبت شد.');
+    } catch (err: any) {
+      console.error('Failed to save visit:', err);
+      toast.error(`خطا در ثبت ویزیت: ${err?.message || 'خطای پایگاه داده'}`);
+    }
   };
 
   // Update follow-up status
-  const handleUpdateFollowupStatus = (id: string, status: FollowUp['status']) => {
-    FieldStorageService.updateFollowUpStatus(id, status);
-    refreshData();
+  const handleUpdateFollowupStatus = async (id: string, status: FollowUp['status']) => {
+    try {
+      await FieldStorageService.updateFollowUpStatusAsync(id, status);
+      refreshData();
+    } catch (err: any) {
+      console.error('Failed to update followup:', err);
+    }
   };
 
   // Counts
@@ -172,6 +234,7 @@ export default function App() {
         onOpenSyncCenter={() => setActiveTab('sync')}
         onOpenVisitCockpit={() => setActiveTab('cockpit')}
         isVisitCockpitActive={activeTab === 'cockpit'}
+        onRefreshGPS={refreshGpsLocation}
       />
 
       {/* 2. Main Content Area */}

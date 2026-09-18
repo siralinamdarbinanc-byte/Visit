@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Store, StoreCategory, CustomerStatus, UserLocation } from '../types';
-import { FieldStorageService, DuplicateCheckResult } from '../services/storage';
+import { FieldStorageService, DuplicateCheckResult, toPersianDigits } from '../services/storage';
+import { geolocationService } from '../services/geolocation';
 import { toast } from '../hooks/useToast';
 import { isValidIranianMobile } from '../utils/persian';
 
@@ -8,8 +9,8 @@ interface StoreEditModalProps {
   store: Store;
   userLocation: UserLocation;
   onClose: () => void;
-  onSave: (updatedStore: Store) => void;
-  onDelete?: (storeId: string) => void;
+  onSave: (updatedStore: Store) => Promise<void> | void;
+  onDelete?: (storeId: string) => Promise<void> | void;
 }
 
 const CATEGORIES: StoreCategory[] = [
@@ -52,6 +53,8 @@ export const StoreEditModal: React.FC<StoreEditModalProps> = ({
   // Duplicate warning state
   const [duplicateWarning, setDuplicateWarning] = useState<DuplicateCheckResult | null>(null);
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   const handleAddBrand = () => {
     const val = brandInput.trim();
@@ -77,15 +80,29 @@ export const StoreEditModal: React.FC<StoreEditModalProps> = ({
     setProducts(products.filter((p) => p !== item));
   };
 
-  const handleUseCurrentGPS = () => {
-    setLat(userLocation.latitude);
-    setLng(userLocation.longitude);
-    toast.info('مختصات با موقعیت فعلی GPS به‌روزرسانی شد.');
+  const handleUseCurrentGPS = async () => {
+    setIsLocating(true);
+    try {
+      const freshLoc = await geolocationService.requestSingleUpdate(true);
+      setLat(freshLoc.latitude);
+      setLng(freshLoc.longitude);
+      toast.success(`مختصات با GPS زنده به‌روزرسانی شد (دقت: ${toPersianDigits(freshLoc.accuracy)}m).`);
+    } catch (err: any) {
+      if (userLocation.latitude !== 0 && userLocation.longitude !== 0) {
+        setLat(userLocation.latitude);
+        setLng(userLocation.longitude);
+        toast.info('مختصات با آخرین موقعیت ثبت‌شده GPS جایگزین شد.');
+      } else {
+        toast.error(`خطای دریافت GPS: ${err?.message || 'سنسور در دسترس نیست'}`);
+      }
+    } finally {
+      setIsLocating(false);
+    }
   };
 
   const handleFormSubmit = async (forceSave = false) => {
-    if (!name.trim()) {
-      toast.error('وارد کردن نام فروشگاه الزامی است.');
+    if (!name.trim() || isSaving) {
+      if (!name.trim()) toast.error('وارد کردن نام فروشگاه الزامی است.');
       return;
     }
 
@@ -97,8 +114,8 @@ export const StoreEditModal: React.FC<StoreEditModalProps> = ({
           mobile: mobile.trim(),
           phone: phone.trim(),
           area: area.trim(),
-          latitude: lat,
-          longitude: lng,
+          latitude: Number(lat) || 0,
+          longitude: Number(lng) || 0,
         },
         store.id
       );
@@ -117,8 +134,8 @@ export const StoreEditModal: React.FC<StoreEditModalProps> = ({
       phone: phone.trim(),
       address: address.trim(),
       area: area.trim(),
-      latitude: lat,
-      longitude: lng,
+      latitude: Number(lat) || 0,
+      longitude: Number(lng) || 0,
       category,
       subcategory: subcategory.trim() || undefined,
       customer_status: customerStatus,
@@ -127,16 +144,29 @@ export const StoreEditModal: React.FC<StoreEditModalProps> = ({
       products,
     };
 
-    onSave(updated);
-    toast.success(`مشخصات فروشگاه «${name}» با موفقیت به‌روزرسانی شد.`);
-    onClose();
+    setIsSaving(true);
+    try {
+      await onSave(updated);
+      onClose();
+    } catch (err: any) {
+      console.error('Error updating store:', err);
+      toast.error(`خطا در به‌روزرسانی: ${err?.message || 'خطای IndexedDB'}`);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const handleDeleteStore = () => {
+  const handleDeleteStore = async () => {
     if (onDelete) {
-      onDelete(store.id);
-      toast.warning(`فروشگاه «${store.name}» و سوابق آن حذف شد.`);
-      onClose();
+      setIsSaving(true);
+      try {
+        await onDelete(store.id);
+        onClose();
+      } catch (err: any) {
+        toast.error(`خطا در حذف فروشگاه: ${err?.message}`);
+      } finally {
+        setIsSaving(false);
+      }
     }
   };
 
@@ -490,10 +520,18 @@ export const StoreEditModal: React.FC<StoreEditModalProps> = ({
 
           <button
             type="button"
+            disabled={isSaving}
             onClick={() => handleFormSubmit(false)}
-            className="flex-1 py-2.5 bg-[#C96F3B] hover:bg-[#B05B29] text-white rounded text-xs font-bold shadow-md active:scale-98 transition-transform"
+            className="flex-1 py-2.5 bg-[#C96F3B] hover:bg-[#B05B29] disabled:opacity-50 text-white rounded text-xs font-bold shadow-md active:scale-98 transition-transform flex items-center justify-center gap-1.5"
           >
-            ✓ ذخیره تغییرات پرونده
+            {isSaving ? (
+              <>
+                <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin"></span>
+                <span>در حال ذخیره تغییرات...</span>
+              </>
+            ) : (
+              '✓ ذخیره تغییرات پرونده'
+            )}
           </button>
         </div>
       </div>

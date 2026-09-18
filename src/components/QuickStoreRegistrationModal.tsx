@@ -1,14 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Store, StoreCategory, CustomerStatus, UserLocation, StorePhoto } from '../types';
 import { IconGpsRadar } from './TechnicalIcons';
-import { FieldStorageService, DuplicateCheckResult } from '../services/storage';
+import { FieldStorageService, DuplicateCheckResult, toPersianDigits } from '../services/storage';
+import { geolocationService } from '../services/geolocation';
 import { PhotoCaptureModal } from './PhotoCaptureModal';
 import { toast } from '../hooks/useToast';
 
 interface QuickStoreRegistrationModalProps {
   userLocation: UserLocation;
   onClose: () => void;
-  onSave: (newStore: Omit<Store, 'id' | 'created_at' | 'updated_at'>) => void;
+  onSave: (newStore: Omit<Store, 'id' | 'created_at' | 'updated_at'>) => Promise<void> | void;
 }
 
 const CATEGORIES: StoreCategory[] = [
@@ -37,12 +38,53 @@ export const QuickStoreRegistrationModal: React.FC<QuickStoreRegistrationModalPr
   const [owner, setOwner] = useState('');
   const [mobile, setMobile] = useState('');
   const [phone, setPhone] = useState('');
-  const [address, setAddress] = useState(userLocation.areaName || 'خیابان ملت، پاساژ کاشانی');
-  const [area, setArea] = useState(userLocation.areaName ? userLocation.areaName.split('،')[1]?.trim() || 'مرکز بازار' : 'مرکز بازار');
-  const [lat, setLat] = useState(userLocation.latitude);
-  const [lng, setLng] = useState(userLocation.longitude);
+  const [address, setAddress] = useState(userLocation.isRealGPS ? userLocation.areaName : 'خیابان ملت، پاساژ کاشانی');
+  const [area, setArea] = useState(userLocation.isRealGPS && userLocation.areaName.includes('،') ? userLocation.areaName.split('،')[1]?.trim() || 'مرکز بازار' : 'مرکز بازار');
+  const [lat, setLat] = useState(userLocation.latitude || 35.6892);
+  const [lng, setLng] = useState(userLocation.longitude || 51.4258);
+  const [gpsAccuracy, setGpsAccuracy] = useState<number>(userLocation.accuracy || 0);
+  const [isRealGPSFix, setIsRealGPSFix] = useState<boolean>(Boolean(userLocation.isRealGPS));
   const [customerStatus, setCustomerStatus] = useState<CustomerStatus>('potential');
   const [notes, setNotes] = useState('');
+
+  // GPS acquiring state
+  const [isLocating, setIsLocating] = useState(false);
+  const [gpsErrorMsg, setGpsErrorMsg] = useState<string | null>(userLocation.errorMessage || null);
+  const [manualCoords, setManualCoords] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Auto request real GPS if current is not real
+  useEffect(() => {
+    if (!userLocation.isRealGPS) {
+      handleAcquireGPS(false);
+    }
+  }, []);
+
+  const handleAcquireGPS = async (showToast = true) => {
+    setIsLocating(true);
+    setGpsErrorMsg(null);
+    try {
+      const freshLoc = await geolocationService.requestSingleUpdate(true);
+      setLat(freshLoc.latitude);
+      setLng(freshLoc.longitude);
+      setGpsAccuracy(freshLoc.accuracy);
+      setIsRealGPSFix(true);
+      if (freshLoc.areaName && !address.trim()) {
+        setAddress(freshLoc.areaName);
+      }
+      if (showToast) {
+        toast.success(`مختصات واقعی GPS با دقت ${toPersianDigits(freshLoc.accuracy)} متر دریافت و ثبت شد.`);
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'عدم دریافت سیگنال GPS';
+      setGpsErrorMsg(msg);
+      if (showToast) {
+        toast.error(`خطای GPS: ${msg}`);
+      }
+    } finally {
+      setIsLocating(false);
+    }
+  };
 
   // Brands
   const [brands, setBrands] = useState<string[]>(['ایساکو', 'عظام']);
@@ -113,25 +155,33 @@ export const QuickStoreRegistrationModal: React.FC<QuickStoreRegistrationModalPr
     }
   };
 
-  const handleFinalSave = () => {
-    if (!name.trim()) return;
+  const handleFinalSave = async () => {
+    if (!name.trim() || isSaving) return;
 
-    onSave({
-      name: name.trim(),
-      category,
-      owner: owner.trim() || 'نامشخص',
-      mobile: mobile.trim() || 'نامشخص',
-      phone: phone.trim() || '',
-      address: address.trim() || 'خیابان ملت، راسته قطعات',
-      area: area.trim() || 'مرکز بازار',
-      latitude: lat,
-      longitude: lng,
-      customer_status: customerStatus,
-      brands,
-      products: category === 'جلوبندی و تعلیق' ? ['سیبک', 'طبق', 'کمک‌فنر'] : ['لنت ترمز', 'شمع موتور', 'تسمه تایم'],
-      notes: notes.trim(),
-      photos,
-    });
+    setIsSaving(true);
+    try {
+      await onSave({
+        name: name.trim(),
+        category,
+        owner: owner.trim() || 'نامشخص',
+        mobile: mobile.trim() || 'نامشخص',
+        phone: phone.trim() || '',
+        address: address.trim() || 'خیابان ملت، راسته قطعات',
+        area: area.trim() || 'مرکز بازار',
+        latitude: Number(lat) || 0,
+        longitude: Number(lng) || 0,
+        customer_status: customerStatus,
+        brands,
+        products: category === 'جلوبندی و تعلیق' ? ['سیبک', 'طبق', 'کمک‌فنر'] : ['لنت ترمز', 'شمع موتور', 'تسمه تایم'],
+        notes: notes.trim(),
+        photos,
+      });
+    } catch (err: any) {
+      console.error('Failed to save store in modal:', err);
+      toast.error(`خطا در ذخیره فروشگاه: ${err?.message || 'خطای ذخیره‌سازی'}`);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -252,30 +302,110 @@ export const QuickStoreRegistrationModal: React.FC<QuickStoreRegistrationModalPr
           {/* STEP 2: شماره تماس و GPS خودکار */}
           {currentStep === 2 && (
             <div className="space-y-3 animate-in fade-in duration-150">
-              {/* GPS Auto Captured Widget */}
-              <div className="bg-[#EBE8DF] border border-[#202426] rounded p-2.5 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="p-1.5 bg-[#123C3A] text-white rounded">
-                    <IconGpsRadar size={16} />
+              {/* GPS Live Captured Widget */}
+              <div className={`border rounded p-2.5 transition-colors ${
+                isRealGPSFix
+                  ? 'bg-emerald-50/90 border-emerald-400 text-emerald-950'
+                  : gpsErrorMsg
+                  ? 'bg-rose-50 border-rose-300 text-rose-950'
+                  : 'bg-[#EBE8DF] border-[#202426] text-[#171A1B]'
+              }`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className={`p-1.5 rounded text-white ${
+                      isRealGPSFix ? 'bg-emerald-700' : gpsErrorMsg ? 'bg-rose-700' : 'bg-[#123C3A]'
+                    }`}>
+                      <IconGpsRadar size={16} className={isLocating ? 'animate-spin' : ''} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="block text-xs font-bold">موقعیت مکانی فروشگاه (GPS)</span>
+                        {isRealGPSFix ? (
+                          <span className="bg-emerald-700 text-white text-[9px] px-1 rounded font-mono">
+                            ماهواره زنده
+                          </span>
+                        ) : (
+                          <span className="bg-stone-600 text-white text-[9px] px-1 rounded font-mono">
+                            {isLocating ? 'در حال اتصال...' : 'بدون سیگنال زنده'}
+                          </span>
+                        )}
+                      </div>
+                      <span className="block text-[10px] font-mono dir-ltr text-stone-700 text-right mt-0.5">
+                        {lat !== 0 && lng !== 0
+                          ? `${lat.toFixed(5)}°N, ${lng.toFixed(5)}°E ${gpsAccuracy > 0 ? `(دقت: ${toPersianDigits(gpsAccuracy)}m)` : ''}`
+                          : 'مختصاتی دریافت نشده است'}
+                      </span>
+                    </div>
                   </div>
-                  <div>
-                    <span className="block text-xs font-bold text-[#171A1B]">موقعیت GPS لحظه‌ای فروشگاه</span>
-                    <span className="block text-[10px] text-[#6E7472] font-mono">
-                      {lat.toFixed(5)}°N, {lng.toFixed(5)}°E (خطا: {userLocation.accuracy}m)
-                    </span>
+
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={isLocating}
+                      onClick={() => handleAcquireGPS(true)}
+                      className="px-2 py-1 bg-[#123C3A] hover:bg-[#1A4B49] text-white rounded text-[10px] font-semibold flex items-center gap-1 disabled:opacity-50"
+                    >
+                      <IconGpsRadar size={12} className={isLocating ? 'animate-spin' : ''} />
+                      <span>{isLocating ? 'دریافت...' : 'دریافت زنده GPS'}</span>
+                    </button>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLat(userLocation.latitude);
-                    setLng(userLocation.longitude);
-                    toast.info('مختصات با GPS فعلی تطبیق داده شد.');
-                  }}
-                  className="px-2 py-1 bg-[#FAF9F5] border border-[#C4BFB2] rounded text-[10px] font-semibold text-[#123C3A]"
-                >
-                  تطبیق مجدد
-                </button>
+
+                {/* Real GPS Error Warning with code and instructions */}
+                {gpsErrorMsg && (
+                  <div className="mt-2 p-2 bg-rose-100 border border-rose-300 rounded text-[11px] text-rose-800 leading-relaxed">
+                    <div className="font-bold flex items-center gap-1">
+                      <span>⚠ خطای سنسور / مرورگر در دریافت GPS:</span>
+                    </div>
+                    <div className="mt-0.5 font-mono text-[10px]">{gpsErrorMsg}</div>
+                    <div className="mt-1 text-[10px] text-rose-700">
+                      می‌توانید مختصات را به صورت دستی وارد کنید یا در محیط باز اقدام به فشردن «دریافت زنده GPS» نمایید.
+                    </div>
+                  </div>
+                )}
+
+                {/* Toggle Manual Coordinates */}
+                <div className="mt-2 pt-2 border-t border-stone-300/60 flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={() => setManualCoords(!manualCoords)}
+                    className="text-[10px] text-[#123C3A] hover:underline font-semibold"
+                  >
+                    {manualCoords ? 'بستن ویرایش دستی مختصات' : 'ویرایش دستی مختصات (Lat/Lng) ✎'}
+                  </button>
+                  {isRealGPSFix && (
+                    <span className="text-[10px] text-emerald-800 font-semibold">
+                      ✓ مختصات با سنسور واقعی دستگاه هماهنگ است
+                    </span>
+                  )}
+                </div>
+
+                {manualCoords && (
+                  <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-stone-200">
+                    <div>
+                      <label className="block text-[10px] text-stone-600 mb-0.5">عرض جغرافیایی (Latitude):</label>
+                      <input
+                        type="number"
+                        step="0.000001"
+                        dir="ltr"
+                        value={lat}
+                        onChange={(e) => setLat(parseFloat(e.target.value) || 0)}
+                        className="w-full bg-white border border-stone-400 rounded p-1 text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-stone-600 mb-0.5">طول جغرافیایی (Longitude):</label>
+                      <input
+                        type="number"
+                        step="0.000001"
+                        dir="ltr"
+                        value={lng}
+                        onChange={(e) => setLng(parseFloat(e.target.value) || 0)}
+                        className="w-full bg-white border border-stone-400 rounded p-1 text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -500,14 +630,23 @@ export const QuickStoreRegistrationModal: React.FC<QuickStoreRegistrationModalPr
           <button
             type="button"
             onClick={handleNextStep}
-            disabled={currentStep === 1 && !name.trim()}
+            disabled={(currentStep === 1 && !name.trim()) || isSaving}
             className={`flex-1 py-2.5 px-4 rounded text-xs font-bold transition-colors ${
               currentStep === 4
                 ? 'bg-[#C96F3B] hover:bg-[#B05B29] text-white shadow-md'
                 : 'bg-[#123C3A] hover:bg-[#1A4B49] text-white'
-            } disabled:opacity-50`}
+            } disabled:opacity-50 flex items-center justify-center gap-1.5`}
           >
-            {currentStep === 4 ? '✓ ثبت قطعی فروشگاه' : 'مرحله بعد ←'}
+            {isSaving ? (
+              <>
+                <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin"></span>
+                <span>در حال ذخیره در دیتابیس محلی...</span>
+              </>
+            ) : currentStep === 4 ? (
+              '✓ ثبت قطعی فروشگاه'
+            ) : (
+              'مرحله بعد ←'
+            )}
           </button>
         </div>
       </div>

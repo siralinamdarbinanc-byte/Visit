@@ -140,6 +140,9 @@ export interface UserLocation {
   speed?: number | null;
   timestamp?: number;
   gpsStatus?: GPSStatus;
+  isRealGPS?: boolean;
+  errorCode?: number;
+  errorMessage?: string;
 }
 
 export type NavigationTab = 'home' | 'map' | 'stores' | 'visits' | 'more';

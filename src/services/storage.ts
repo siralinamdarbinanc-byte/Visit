@@ -17,7 +17,13 @@ import { exportAllDataJSON, exportStoresCSV, exportVisitsCSV, importBackupJSON }
 export { toPersianDigits, formatDistance, getPersianDateString, getPersianTimeString, getPersianFullDateTime };
 
 // Calculate distance in meters between two lat/lng pairs using Haversine formula
-export function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+export function calculateDistance(
+  lat1?: number | null,
+  lon1?: number | null,
+  lat2?: number | null,
+  lon2?: number | null
+): number {
+  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
   const R = 6371e3; // metres
   const φ1 = (lat1 * Math.PI) / 180;
   const φ2 = (lat2 * Math.PI) / 180;
@@ -47,15 +53,39 @@ export class FieldStorageService {
   private static cachedVisits: Visit[] = [];
   private static cachedFollowUps: FollowUp[] = [];
   private static isInitialized = false;
+  private static listeners: Set<() => void> = new Set();
 
   private static userLocation: UserLocation = {
-    latitude: 35.6892,
-    longitude: 51.4258,
-    accuracy: 12,
+    latitude: 0,
+    longitude: 0,
+    accuracy: 0,
     timestamp: Date.now(),
-    areaName: 'تهران، منطقه ۱۲، راسته چراغ‌برق (خیابان ملت)',
+    areaName: 'در انتظار دریافت موقعیت واقعی GPS...',
+    gpsStatus: 'searching',
+    isRealGPS: false,
   };
   private static connectionState: ConnectionState = typeof navigator !== 'undefined' && navigator.onLine ? 'online' : 'offline';
+
+  public static subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  public static notifyListeners(): void {
+    this.listeners.forEach((listener) => {
+      try {
+        listener();
+      } catch (e) {
+        console.error('Storage listener error:', e);
+      }
+    });
+  }
+
+  public static getIsInitialized(): boolean {
+    return this.isInitialized;
+  }
 
   public static getUserLocation(): UserLocation {
     return this.userLocation;
@@ -80,6 +110,7 @@ export class FieldStorageService {
     await ensureDatabaseSeeded();
     await this.refreshCache();
     this.isInitialized = true;
+    this.notifyListeners();
   }
 
   /**
@@ -89,6 +120,7 @@ export class FieldStorageService {
     this.cachedStores = await db.stores.toArray();
     this.cachedVisits = await db.visits.reverse().sortBy('created_at');
     this.cachedFollowUps = await db.followups.reverse().sortBy('created_at');
+    this.notifyListeners();
   }
 
   // ================= STORES CRUD =================
@@ -98,11 +130,15 @@ export class FieldStorageService {
    */
   public static getStores(currentLoc?: UserLocation): Store[] {
     const stores = [...this.cachedStores];
-    if (!currentLoc) return stores;
+    if (!currentLoc || !currentLoc.isRealGPS || (currentLoc.latitude === 0 && currentLoc.longitude === 0)) {
+      return stores;
+    }
 
     return stores.map((s) => ({
       ...s,
-      distance: calculateDistance(currentLoc.latitude, currentLoc.longitude, s.latitude, s.longitude),
+      distance: (s.latitude && s.longitude)
+        ? calculateDistance(currentLoc.latitude, currentLoc.longitude, s.latitude, s.longitude)
+        : undefined,
     }));
   }
 
@@ -201,7 +237,7 @@ export class FieldStorageService {
         id: storeData.id,
         created_at: existing?.created_at || jalaliDate,
         updated_at: jalaliDate,
-        visit_count: existing?.visit_count || 0,
+        visit_count: existing?.visit_count ?? 0,
         last_visit_date: existing?.last_visit_date,
         last_visit_result: existing?.last_visit_result,
         photos: storeData.photos || existing?.photos || [],
@@ -210,7 +246,7 @@ export class FieldStorageService {
       await db.stores.put(savedStore);
       await syncService.enqueue('UPDATE', 'STORE', savedStore.id, savedStore);
     } else {
-      const newId = `store-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      const newId = storeData.id || `store-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
       savedStore = {
         ...storeData,
         id: newId,
@@ -220,11 +256,19 @@ export class FieldStorageService {
         visit_count: 0,
       } as Store;
 
-      await db.stores.add(savedStore);
+      await db.stores.put(savedStore);
       await syncService.enqueue('CREATE', 'STORE', newId, savedStore);
+
+      const existingIdx = this.cachedStores.findIndex((s) => s.id === newId);
+      if (existingIdx >= 0) {
+        this.cachedStores[existingIdx] = savedStore;
+      } else {
+        this.cachedStores.unshift(savedStore);
+      }
     }
 
     await this.refreshCache();
+    this.notifyListeners();
     return savedStore;
   }
 
@@ -234,9 +278,8 @@ export class FieldStorageService {
   public static saveStore(
     storeData: Omit<Store, 'id' | 'created_at' | 'updated_at'> & { id?: string }
   ): Store {
-    // Optimistic cache update immediately
     const jalaliDate = getPersianDateString(new Date());
-    const newId = storeData.id || `store-${Date.now()}`;
+    const newId = storeData.id || `store-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     const optimistic: Store = {
       ...storeData,
       id: newId,
@@ -246,14 +289,29 @@ export class FieldStorageService {
       visit_count: 0,
     } as Store;
 
-    // Trigger async persistence
-    this.saveStoreAsync(storeData).catch(console.error);
+    // Immediately update in-memory cache
+    const idx = this.cachedStores.findIndex((s) => s.id === newId);
+    if (idx >= 0) {
+      this.cachedStores[idx] = optimistic;
+    } else {
+      this.cachedStores.unshift(optimistic);
+    }
+    this.notifyListeners();
+
+    // Persist asynchronously with the exact same ID
+    this.saveStoreAsync({ ...storeData, id: newId }).catch((err) => {
+      console.error('Failed to save store to IndexedDB:', err);
+    });
 
     return optimistic;
   }
 
   public static addStore(storeData: Omit<Store, 'id' | 'created_at' | 'updated_at'>): Store {
     return this.saveStore(storeData);
+  }
+
+  public static async addStoreAsync(storeData: Omit<Store, 'id' | 'created_at' | 'updated_at'>): Promise<Store> {
+    return await this.saveStoreAsync(storeData);
   }
 
   /**
@@ -270,7 +328,11 @@ export class FieldStorageService {
   }
 
   public static deleteStore(id: string): void {
-    this.deleteStoreAsync(id).catch(console.error);
+    this.cachedStores = this.cachedStores.filter((s) => s.id !== id);
+    this.notifyListeners();
+    this.deleteStoreAsync(id).catch((err) => {
+      console.error('Failed to delete store from IndexedDB:', err);
+    });
   }
 
   /**

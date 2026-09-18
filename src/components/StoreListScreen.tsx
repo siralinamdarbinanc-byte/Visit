@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Store, CustomerStatus, StoreCategory } from '../types';
 import { StatusGlyph, IconPhoneCall, IconNavigation, IconVisitCheck } from './TechnicalIcons';
 import { formatDistance, toPersianDigits } from '../services/storage';
+import { normalizePersianText, normalizePhoneNumber } from '../utils/persian';
 
 interface StoreListScreenProps {
   stores: Store[];
@@ -11,7 +12,7 @@ interface StoreListScreenProps {
   onOpenAddStore: () => void;
 }
 
-type SortOption = 'nearest' | 'last_visit' | 'unvisited' | 'followup' | 'newest';
+type SortOption = 'nearest' | 'last_visit' | 'unvisited' | 'followup' | 'newest' | 'alphabetical';
 
 export const StoreListScreen: React.FC<StoreListScreenProps> = ({
   stores,
@@ -25,6 +26,8 @@ export const StoreListScreen: React.FC<StoreListScreenProps> = ({
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterArea, setFilterArea] = useState<string>('all');
+  const [filterRadius, setFilterRadius] = useState<string>('all');
+  const [filterVisitState, setFilterVisitState] = useState<string>('all');
   const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
 
   // Extract unique areas and categories
@@ -35,21 +38,34 @@ export const StoreListScreen: React.FC<StoreListScreenProps> = ({
   const processedStores = useMemo(() => {
     let result = [...stores];
 
-    // Search
+    // Search with Persian character & digit normalization
     if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim();
-      result = result.filter(
-        (s) =>
-          s.name.toLowerCase().includes(q) ||
-          s.owner.toLowerCase().includes(q) ||
-          s.mobile.includes(q) ||
-          s.phone.includes(q) ||
-          s.address.toLowerCase().includes(q) ||
-          s.area.toLowerCase().includes(q) ||
-          s.category.toLowerCase().includes(q) ||
-          s.brands.some((b) => b.toLowerCase().includes(q)) ||
-          s.products.some((p) => p.toLowerCase().includes(q))
-      );
+      const qNorm = normalizePersianText(searchQuery);
+      const qDigits = normalizePhoneNumber(searchQuery);
+
+      result = result.filter((s) => {
+        const nameNorm = normalizePersianText(s.name);
+        const ownerNorm = normalizePersianText(s.owner);
+        const addressNorm = normalizePersianText(s.address);
+        const areaNorm = normalizePersianText(s.area);
+        const catNorm = normalizePersianText(s.category);
+        const mobileNorm = normalizePhoneNumber(s.mobile);
+        const phoneNorm = normalizePhoneNumber(s.phone);
+
+        const brandsMatch = s.brands?.some((b) => normalizePersianText(b).includes(qNorm));
+        const productsMatch = s.products?.some((p) => normalizePersianText(p).includes(qNorm));
+
+        return (
+          nameNorm.includes(qNorm) ||
+          ownerNorm.includes(qNorm) ||
+          addressNorm.includes(qNorm) ||
+          areaNorm.includes(qNorm) ||
+          catNorm.includes(qNorm) ||
+          (qDigits && (mobileNorm.includes(qDigits) || phoneNorm.includes(qDigits))) ||
+          brandsMatch ||
+          productsMatch
+        );
+      });
     }
 
     // Category Filter
@@ -67,6 +83,21 @@ export const StoreListScreen: React.FC<StoreListScreenProps> = ({
       result = result.filter((s) => s.area === filterArea);
     }
 
+    // Distance Radius Filter
+    if (filterRadius !== 'all') {
+      const maxMeters = parseInt(filterRadius, 10);
+      result = result.filter((s) => (s.distance ?? Infinity) <= maxMeters);
+    }
+
+    // Visited vs Unvisited Filter
+    if (filterVisitState === 'visited') {
+      result = result.filter((s) => (s.visit_count || 0) > 0);
+    } else if (filterVisitState === 'unvisited') {
+      result = result.filter((s) => !s.visit_count || s.visit_count === 0);
+    } else if (filterVisitState === 'needs_followup') {
+      result = result.filter((s) => s.last_visit_result === 'needs_followup');
+    }
+
     // Sort
     switch (selectedSort) {
       case 'nearest':
@@ -82,6 +113,9 @@ export const StoreListScreen: React.FC<StoreListScreenProps> = ({
           return bNeed - aNeed;
         });
         break;
+      case 'alphabetical':
+        result.sort((a, b) => a.name.localeCompare(b.name, 'fa'));
+        break;
       case 'newest':
         result.sort((a, b) => b.id.localeCompare(a.id));
         break;
@@ -91,12 +125,14 @@ export const StoreListScreen: React.FC<StoreListScreenProps> = ({
     }
 
     return result;
-  }, [stores, searchQuery, selectedSort, filterCategory, filterStatus, filterArea]);
+  }, [stores, searchQuery, selectedSort, filterCategory, filterStatus, filterArea, filterRadius, filterVisitState]);
 
   const activeFiltersCount =
     (filterCategory !== 'all' ? 1 : 0) +
     (filterStatus !== 'all' ? 1 : 0) +
-    (filterArea !== 'all' ? 1 : 0);
+    (filterArea !== 'all' ? 1 : 0) +
+    (filterRadius !== 'all' ? 1 : 0) +
+    (filterVisitState !== 'all' ? 1 : 0);
 
   return (
     <div className="pb-20 px-3 pt-3 max-w-lg mx-auto space-y-2.5">
@@ -157,6 +193,7 @@ export const StoreListScreen: React.FC<StoreListScreenProps> = ({
             <option value="last_visit">آخرین بازدید</option>
             <option value="unvisited">بازدیدنشده</option>
             <option value="followup">نیازمند پیگیری</option>
+            <option value="alphabetical">الفبایی (نام)</option>
             <option value="newest">جدیدترین</option>
           </select>
         </div>
@@ -192,6 +229,8 @@ export const StoreListScreen: React.FC<StoreListScreenProps> = ({
                 setFilterCategory('all');
                 setFilterStatus('all');
                 setFilterArea('all');
+                setFilterRadius('all');
+                setFilterVisitState('all');
               }}
               className="text-[11px] text-[#B94A48] hover:underline"
             >
@@ -199,7 +238,7 @@ export const StoreListScreen: React.FC<StoreListScreenProps> = ({
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             {/* Category Filter */}
             <div>
               <label className="block text-[10px] text-[#6E7472] mb-0.5">دسته‌بندی صنف:</label>
@@ -233,8 +272,39 @@ export const StoreListScreen: React.FC<StoreListScreenProps> = ({
               </select>
             </div>
 
-            {/* Area Filter */}
+            {/* Radius Filter */}
             <div>
+              <label className="block text-[10px] text-[#6E7472] mb-0.5">شعاع فاصله از شما:</label>
+              <select
+                value={filterRadius}
+                onChange={(e) => setFilterRadius(e.target.value)}
+                className="w-full bg-[#EBE8DF] border border-[#D5D0C3] rounded p-1 text-xs"
+              >
+                <option value="all">تمام فاصله‌ها</option>
+                <option value="500">تا ۵۰۰ متر</option>
+                <option value="1000">تا ۱ کیلومتر</option>
+                <option value="2000">تا ۲ کیلومتر</option>
+                <option value="5000">تا ۵ کیلومتر</option>
+              </select>
+            </div>
+
+            {/* Visit State Filter */}
+            <div>
+              <label className="block text-[10px] text-[#6E7472] mb-0.5">وضعیت ویزیت:</label>
+              <select
+                value={filterVisitState}
+                onChange={(e) => setFilterVisitState(e.target.value)}
+                className="w-full bg-[#EBE8DF] border border-[#D5D0C3] rounded p-1 text-xs"
+              >
+                <option value="all">همه</option>
+                <option value="visited">ویزیت شده</option>
+                <option value="unvisited">هرگز ویزیت نشده</option>
+                <option value="needs_followup">نیازمند پیگیری</option>
+              </select>
+            </div>
+
+            {/* Area Filter */}
+            <div className="col-span-2 sm:col-span-1">
               <label className="block text-[10px] text-[#6E7472] mb-0.5">منطقه / راسته بازار:</label>
               <select
                 value={filterArea}

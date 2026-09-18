@@ -1,7 +1,6 @@
 {
   "name": "فرمان میدانی | سامانه ویزیت قطعات خودرو",
   "description": "سامانه تخصصی فروش میدانی، نقشه‌محور، رصد ویزیت و ثبت فروشگاه‌های قطعات خودرو به همراه مدیریت آفلاین و مسیربندی",
-  "requestFramePermissions": ["geolocation"],
+  "requestFramePermissions": ["geolocation", "camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
-

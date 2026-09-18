@@ -1,16 +1,20 @@
 import { Store, Visit, FollowUp, SyncQueueItem, ConnectionState, UserLocation, StoreCategory, CustomerStatus } from '../types';
-import { INITIAL_STORES, INITIAL_VISITS, INITIAL_FOLLOWUPS, INITIAL_USER_LOCATION } from '../data/mockStores';
+import { db } from '../db/database';
+import { ensureDatabaseSeeded, seedInitialData } from '../db/seed';
+import { syncService } from './sync';
+import {
+  normalizePersianText,
+  normalizePhoneNumber,
+  toPersianDigits,
+  formatDistance,
+  getPersianDateString,
+  getPersianTimeString,
+  getPersianFullDateTime,
+} from '../utils/persian';
+import { exportAllDataJSON, exportStoresCSV, exportVisitsCSV, importBackupJSON } from '../utils/export';
 
-const STORAGE_KEYS = {
-  STORES: 'field_command_stores_v1',
-  VISITS: 'field_command_visits_v1',
-  FOLLOWUPS: 'field_command_followups_v1',
-  SYNC_QUEUE: 'field_command_sync_queue_v1',
-  SYNC_HISTORY: 'field_command_sync_history_v1',
-  SYNC_STATS: 'field_command_sync_stats_v1',
-  USER_LOCATION: 'field_command_user_loc_v1',
-  CONNECTION_STATE: 'field_command_conn_state_v1',
-};
+// Re-export helper utilities for existing components
+export { toPersianDigits, formatDistance, getPersianDateString, getPersianTimeString, getPersianFullDateTime };
 
 // Calculate distance in meters between two lat/lng pairs using Haversine formula
 export function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -28,89 +32,185 @@ export function calculateDistance(lat1: number, lon1: number, lat2: number, lon2
   return Math.round(R * c);
 }
 
-// Format meters to human readable Persian string
-export function formatDistance(meters: number): string {
-  if (meters < 1000) {
-    return `${meters} متر`;
-  }
-  const km = (meters / 1000).toFixed(1);
-  return `${km} کیلومتر`;
+export interface DuplicateCheckResult {
+  isDuplicate: boolean;
+  matchedStore?: Store;
+  reason?: string;
 }
 
-// Convert English numbers to Persian digits
-export function toPersianDigits(num: string | number): string {
-  const persianDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
-  return String(num).replace(/[0-9]/g, (w) => persianDigits[+w]);
-}
-
+/**
+ * FieldStorageService provides complete CRUD and querying over IndexedDB (Dexie)
+ * with syncQueue generation and in-memory cache for instant UI rendering.
+ */
 export class FieldStorageService {
-  // --- Stores ---
-  static getStores(currentLoc?: UserLocation): Store[] {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.STORES);
-      let stores: Store[] = data ? JSON.parse(data) : INITIAL_STORES;
-      const loc = currentLoc || this.getUserLocation();
+  private static cachedStores: Store[] = [];
+  private static cachedVisits: Visit[] = [];
+  private static cachedFollowUps: FollowUp[] = [];
+  private static isInitialized = false;
 
-      // Calculate distance for all stores from current location
-      stores = stores.map((s) => ({
-        ...s,
-        distance: calculateDistance(loc.latitude, loc.longitude, s.latitude, s.longitude),
-      }));
+  private static userLocation: UserLocation = {
+    latitude: 35.6892,
+    longitude: 51.4258,
+    accuracy: 12,
+    timestamp: Date.now(),
+    areaName: 'تهران، منطقه ۱۲، راسته چراغ‌برق (خیابان ملت)',
+  };
+  private static connectionState: ConnectionState = typeof navigator !== 'undefined' && navigator.onLine ? 'online' : 'offline';
 
-      return stores;
-    } catch {
-      return INITIAL_STORES;
+  public static getUserLocation(): UserLocation {
+    return this.userLocation;
+  }
+
+  public static setUserLocation(loc: UserLocation): void {
+    this.userLocation = loc;
+  }
+
+  public static getConnectionState(): ConnectionState {
+    return this.connectionState;
+  }
+
+  public static setConnectionState(state: ConnectionState): void {
+    this.connectionState = state;
+  }
+
+  /**
+   * Initializes the database, seeds initial market stores if empty, and hydrates cache.
+   */
+  public static async init(): Promise<void> {
+    await ensureDatabaseSeeded();
+    await this.refreshCache();
+    this.isInitialized = true;
+  }
+
+  /**
+   * Refreshes in-memory cache from IndexedDB
+   */
+  public static async refreshCache(): Promise<void> {
+    this.cachedStores = await db.stores.toArray();
+    this.cachedVisits = await db.visits.reverse().sortBy('created_at');
+    this.cachedFollowUps = await db.followups.reverse().sortBy('created_at');
+  }
+
+  // ================= STORES CRUD =================
+
+  /**
+   * Get stores with real-time distance calculations from current user GPS
+   */
+  public static getStores(currentLoc?: UserLocation): Store[] {
+    const stores = [...this.cachedStores];
+    if (!currentLoc) return stores;
+
+    return stores.map((s) => ({
+      ...s,
+      distance: calculateDistance(currentLoc.latitude, currentLoc.longitude, s.latitude, s.longitude),
+    }));
+  }
+
+  public static async getStoresAsync(currentLoc?: UserLocation): Promise<Store[]> {
+    if (!this.isInitialized) {
+      await this.init();
     }
+    return this.getStores(currentLoc);
   }
 
-  static getStoreById(id: string): Store | undefined {
-    const stores = this.getStores();
-    return stores.find((s) => s.id === id);
+  public static getStoreById(id: string): Store | undefined {
+    return this.cachedStores.find((s) => s.id === id);
   }
 
-  static addStore(storeData: Omit<Store, 'id' | 'created_at' | 'updated_at'>): Store {
-    return this.saveStore(storeData);
+  public static async getStoreByIdAsync(id: string): Promise<Store | undefined> {
+    return await db.stores.get(id);
   }
 
-  static addPhotoToStore(storeId: string, url: string, caption?: string): void {
-    const stores = this.getStores();
-    const store = stores.find((s) => s.id === storeId);
-    if (store) {
-      if (!store.photos) store.photos = [];
-      store.photos.push({
-        id: `photo-${Date.now()}`,
-        type: 'storefront',
-        url,
-        caption,
-        created_at: this.getPersianDateString(new Date()),
-      });
-      localStorage.setItem(STORAGE_KEYS.STORES, JSON.stringify(stores));
-      this.enqueueSync('UPDATE', 'STORE', storeId, store);
+  /**
+   * Duplicate Store Detection
+   * Checks phone, mobile, similar name, or nearby location (within 20m)
+   */
+  public static async checkDuplicateStore(
+    candidate: Partial<Store>,
+    currentStoreId?: string
+  ): Promise<DuplicateCheckResult> {
+    const all = await db.stores.toArray();
+    const otherStores = currentStoreId ? all.filter((s) => s.id !== currentStoreId) : all;
+
+    const candMobile = normalizePhoneNumber(candidate.mobile || '');
+    const candPhone = normalizePhoneNumber(candidate.phone || '');
+    const candNameNorm = normalizePersianText(candidate.name || '');
+
+    for (const store of otherStores) {
+      // 1. Mobile match
+      if (candMobile && candMobile.length >= 10 && normalizePhoneNumber(store.mobile) === candMobile) {
+        return {
+          isDuplicate: true,
+          matchedStore: store,
+          reason: `شماره همراه وارد شده قبلاً برای فروشگاه «${store.name}» ثبت شده است.`,
+        };
+      }
+
+      // 2. Phone match
+      if (candPhone && candPhone.length >= 8 && normalizePhoneNumber(store.phone) === candPhone) {
+        return {
+          isDuplicate: true,
+          matchedStore: store,
+          reason: `شماره تلفن ثابت وارد شده قبلاً برای فروشگاه «${store.name}» ثبت شده است.`,
+        };
+      }
+
+      // 3. Exact or very close name match in the same area
+      const storeNameNorm = normalizePersianText(store.name);
+      if (candNameNorm && storeNameNorm === candNameNorm && normalizePersianText(store.area) === normalizePersianText(candidate.area || '')) {
+        return {
+          isDuplicate: true,
+          matchedStore: store,
+          reason: `فروشگاهی با همین نام در منطقه «${store.area}» ثبت شده است.`,
+        };
+      }
+
+      // 4. Very close geographic proximity (under 20 meters)
+      if (
+        candidate.latitude &&
+        candidate.longitude &&
+        calculateDistance(candidate.latitude, candidate.longitude, store.latitude, store.longitude) < 20
+      ) {
+        return {
+          isDuplicate: true,
+          matchedStore: store,
+          reason: `یک فروشگاه دیگر («${store.name}») در فاصله کمتر از ۲۰ متری این مختصات قرار دارد.`,
+        };
+      }
     }
+
+    return { isDuplicate: false };
   }
 
-  static saveStore(storeData: Omit<Store, 'id' | 'created_at' | 'updated_at'> & { id?: string }): Store {
-    const stores = this.getStores();
+  /**
+   * Save or Update a store in IndexedDB and enqueue sync
+   */
+  public static async saveStoreAsync(
+    storeData: Omit<Store, 'id' | 'created_at' | 'updated_at'> & { id?: string }
+  ): Promise<Store> {
     const now = new Date();
-    const jalaliDate = this.getPersianDateString(now);
+    const jalaliDate = getPersianDateString(now);
 
     let savedStore: Store;
-    if (storeData.id) {
-      // Edit
+    const isEdit = Boolean(storeData.id);
+
+    if (isEdit && storeData.id) {
+      const existing = await db.stores.get(storeData.id);
       savedStore = {
         ...storeData,
         id: storeData.id,
-        created_at: stores.find((s) => s.id === storeData.id)?.created_at || jalaliDate,
+        created_at: existing?.created_at || jalaliDate,
         updated_at: jalaliDate,
+        visit_count: existing?.visit_count || 0,
+        last_visit_date: existing?.last_visit_date,
+        last_visit_result: existing?.last_visit_result,
+        photos: storeData.photos || existing?.photos || [],
       } as Store;
-      const index = stores.findIndex((s) => s.id === storeData.id);
-      if (index !== -1) {
-        stores[index] = savedStore;
-      }
-      this.enqueueSync('UPDATE', 'STORE', savedStore.id, savedStore);
+
+      await db.stores.put(savedStore);
+      await syncService.enqueue('UPDATE', 'STORE', savedStore.id, savedStore);
     } else {
-      // Create new
-      const newId = `store-${Date.now()}`;
+      const newId = `store-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
       savedStore = {
         ...storeData,
         id: newId,
@@ -119,283 +219,310 @@ export class FieldStorageService {
         updated_at: jalaliDate,
         visit_count: 0,
       } as Store;
-      stores.unshift(savedStore);
-      this.enqueueSync('CREATE', 'STORE', newId, savedStore);
+
+      await db.stores.add(savedStore);
+      await syncService.enqueue('CREATE', 'STORE', newId, savedStore);
     }
 
-    localStorage.setItem(STORAGE_KEYS.STORES, JSON.stringify(stores));
+    await this.refreshCache();
     return savedStore;
   }
 
-  // --- Visits ---
-  static getVisits(): Visit[] {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.VISITS);
-      return data ? JSON.parse(data) : INITIAL_VISITS;
-    } catch {
-      return INITIAL_VISITS;
-    }
+  /**
+   * Sync-compatible wrapper for saveStore
+   */
+  public static saveStore(
+    storeData: Omit<Store, 'id' | 'created_at' | 'updated_at'> & { id?: string }
+  ): Store {
+    // Optimistic cache update immediately
+    const jalaliDate = getPersianDateString(new Date());
+    const newId = storeData.id || `store-${Date.now()}`;
+    const optimistic: Store = {
+      ...storeData,
+      id: newId,
+      created_at: jalaliDate,
+      updated_at: jalaliDate,
+      photos: storeData.photos || [],
+      visit_count: 0,
+    } as Store;
+
+    // Trigger async persistence
+    this.saveStoreAsync(storeData).catch(console.error);
+
+    return optimistic;
   }
 
-  static addVisit(visitData: Omit<Visit, 'id' | 'created_at'>): Visit {
-    const visits = this.getVisits();
-    const now = new Date();
-    const newId = `v-${Date.now()}`;
+  public static addStore(storeData: Omit<Store, 'id' | 'created_at' | 'updated_at'>): Store {
+    return this.saveStore(storeData);
+  }
+
+  /**
+   * Delete a store and its related visits/followups
+   */
+  public static async deleteStoreAsync(id: string): Promise<void> {
+    await db.transaction('rw', [db.stores, db.visits, db.followups, db.syncQueue], async () => {
+      await db.stores.delete(id);
+      await db.visits.where('store_id').equals(id).delete();
+      await db.followups.where('store_id').equals(id).delete();
+    });
+    await syncService.enqueue('DELETE', 'STORE', id, { id });
+    await this.refreshCache();
+  }
+
+  public static deleteStore(id: string): void {
+    this.deleteStoreAsync(id).catch(console.error);
+  }
+
+  /**
+   * Add photo to a store
+   */
+  public static async addPhotoToStoreAsync(
+    storeId: string,
+    url: string,
+    caption?: string,
+    type: 'storefront' | 'sign' | 'business_card' | 'shelf' | 'other' = 'storefront'
+  ): Promise<void> {
+    const store = await db.stores.get(storeId);
+    if (!store) return;
+
+    if (!store.photos) store.photos = [];
+    store.photos.push({
+      id: `photo-${Date.now()}`,
+      type,
+      url,
+      caption,
+      created_at: getPersianDateString(),
+    });
+
+    await db.stores.put(store);
+    await syncService.enqueue('UPDATE', 'STORE', storeId, store);
+    await this.refreshCache();
+  }
+
+  public static addPhotoToStore(storeId: string, url: string, caption?: string): void {
+    this.addPhotoToStoreAsync(storeId, url, caption).catch(console.error);
+  }
+
+  public static async removePhotoFromStoreAsync(storeId: string, photoId: string): Promise<void> {
+    const store = await db.stores.get(storeId);
+    if (!store || !store.photos) return;
+
+    store.photos = store.photos.filter((p) => p.id !== photoId);
+    await db.stores.put(store);
+    await syncService.enqueue('UPDATE', 'STORE', storeId, store);
+    await this.refreshCache();
+  }
+
+  public static removePhotoFromStore(storeId: string, photoId: string): void {
+    this.removePhotoFromStoreAsync(storeId, photoId).catch(console.error);
+  }
+
+  // ================= VISITS CRUD =================
+
+  public static getVisits(): Visit[] {
+    return [...this.cachedVisits];
+  }
+
+  public static async getVisitsAsync(): Promise<Visit[]> {
+    return await db.visits.reverse().sortBy('created_at');
+  }
+
+  public static async addVisitAsync(visitData: Omit<Visit, 'id' | 'created_at'>): Promise<Visit> {
+    const newId = `v-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const newVisit: Visit = {
       ...visitData,
       id: newId,
-      created_at: now.toISOString(),
+      created_at: new Date().toISOString(),
     };
-    visits.unshift(newVisit);
-    localStorage.setItem(STORAGE_KEYS.VISITS, JSON.stringify(visits));
 
-    // Also update the store's last visit date and result
-    const stores = this.getStores();
-    const store = stores.find((s) => s.id === visitData.store_id);
+    await db.visits.add(newVisit);
+
+    // Update store stats
+    const store = await db.stores.get(visitData.store_id);
     if (store) {
       store.last_visit_date = visitData.date;
       store.last_visit_result = visitData.result;
       store.visit_count = (store.visit_count || 0) + 1;
-      localStorage.setItem(STORAGE_KEYS.STORES, JSON.stringify(stores));
+      await db.stores.put(store);
+      await syncService.enqueue('UPDATE', 'STORE', store.id, store);
     }
 
-    // If follow-up specified, auto create follow-up item
+    // Auto create follow-up if date specified
     if (visitData.next_followup) {
-      this.addFollowUp({
+      await this.addFollowUpAsync({
         store_id: visitData.store_id,
         store_name: visitData.store_name,
-        phone: store?.mobile || '',
-        area: store?.area || 'نامشخص',
+        phone: store?.mobile || store?.phone || '',
+        area: store?.area || 'مرکز بازار',
         date: visitData.next_followup,
-        note: `پیگیری پیرامون نتیجه ویزیت: ${visitData.note || 'جلسه حضوری'}`,
+        note: `پیگیری پیرامون نتیجه ویزیت: ${visitData.note || 'مذاکره حضوری'}`,
         status: 'pending',
         last_visit_date: visitData.date,
       });
     }
 
-    this.enqueueSync('CREATE', 'VISIT', newId, newVisit);
+    await syncService.enqueue('CREATE', 'VISIT', newId, newVisit);
+    await this.refreshCache();
     return newVisit;
   }
 
-  // --- Follow-ups ---
-  static getFollowUps(): FollowUp[] {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.FOLLOWUPS);
-      return data ? JSON.parse(data) : INITIAL_FOLLOWUPS;
-    } catch {
-      return INITIAL_FOLLOWUPS;
-    }
+  public static addVisit(visitData: Omit<Visit, 'id' | 'created_at'>): Visit {
+    const newId = `v-${Date.now()}`;
+    const optimistic: Visit = {
+      ...visitData,
+      id: newId,
+      created_at: new Date().toISOString(),
+    };
+    this.addVisitAsync(visitData).catch(console.error);
+    return optimistic;
   }
 
-  static addFollowUp(item: Omit<FollowUp, 'id' | 'created_at'>): FollowUp {
-    const items = this.getFollowUps();
-    const newId = `f-${Date.now()}`;
+  // ================= FOLLOW-UPS CRUD =================
+
+  public static getFollowUps(): FollowUp[] {
+    return [...this.cachedFollowUps];
+  }
+
+  public static async getFollowUpsAsync(): Promise<FollowUp[]> {
+    return await db.followups.reverse().sortBy('created_at');
+  }
+
+  public static async addFollowUpAsync(item: Omit<FollowUp, 'id' | 'created_at'>): Promise<FollowUp> {
+    const newId = `f-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const newItem: FollowUp = {
       ...item,
       id: newId,
       created_at: new Date().toISOString(),
     };
-    items.unshift(newItem);
-    localStorage.setItem(STORAGE_KEYS.FOLLOWUPS, JSON.stringify(items));
-    this.enqueueSync('CREATE', 'FOLLOW_UP', newId, newItem);
+
+    await db.followups.add(newItem);
+    await syncService.enqueue('CREATE', 'FOLLOW_UP', newId, newItem);
+    await this.refreshCache();
     return newItem;
   }
 
-  static updateFollowUpStatus(id: string, status: 'pending' | 'completed' | 'postponed' | 'overdue'): void {
-    const items = this.getFollowUps();
-    const item = items.find((f) => f.id === id);
+  public static addFollowUp(item: Omit<FollowUp, 'id' | 'created_at'>): FollowUp {
+    const newId = `f-${Date.now()}`;
+    const optimistic: FollowUp = {
+      ...item,
+      id: newId,
+      created_at: new Date().toISOString(),
+    };
+    this.addFollowUpAsync(item).catch(console.error);
+    return optimistic;
+  }
+
+  public static async updateFollowUpStatusAsync(
+    id: string,
+    status: 'pending' | 'completed' | 'postponed' | 'overdue'
+  ): Promise<void> {
+    const item = await db.followups.get(id);
     if (item) {
       item.status = status;
-      localStorage.setItem(STORAGE_KEYS.FOLLOWUPS, JSON.stringify(items));
-      this.enqueueSync('UPDATE', 'FOLLOW_UP', id, item);
+      await db.followups.put(item);
+      await syncService.enqueue('UPDATE', 'FOLLOW_UP', id, item);
+      await this.refreshCache();
     }
   }
 
-  // --- User Location & Compass ---
-  static getUserLocation(): UserLocation {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.USER_LOCATION);
-      return data ? JSON.parse(data) : INITIAL_USER_LOCATION;
-    } catch {
-      return INITIAL_USER_LOCATION;
-    }
+  public static updateFollowUpStatus(id: string, status: 'pending' | 'completed' | 'postponed' | 'overdue'): void {
+    this.updateFollowUpStatusAsync(id, status).catch(console.error);
   }
 
-  static setUserLocation(loc: UserLocation): void {
-    localStorage.setItem(STORAGE_KEYS.USER_LOCATION, JSON.stringify(loc));
+  public static async deleteFollowUpAsync(id: string): Promise<void> {
+    await db.followups.delete(id);
+    await syncService.enqueue('DELETE', 'FOLLOW_UP', id, { id });
+    await this.refreshCache();
   }
 
-  static simulateDriveMovement(): UserLocation {
-    const current = this.getUserLocation();
-    // Simulate slight movement heading along Ekbatan / Mellat street
-    const deltaLat = (Math.random() - 0.5) * 0.0008;
-    const deltaLng = (Math.random() - 0.5) * 0.0008;
-    const updated: UserLocation = {
-      ...current,
-      latitude: current.latitude + deltaLat,
-      longitude: current.longitude + deltaLng,
-      speed: Math.floor(15 + Math.random() * 25),
-      heading: ((current.heading || 0) + 15) % 360,
-    };
-    this.setUserLocation(updated);
-    return updated;
+  // ================= SYNC ARCHITECTURE =================
+
+  public static async getSyncQueueAsync(): Promise<SyncQueueItem[]> {
+    return await db.syncQueue.toArray();
   }
 
-  // --- Connection & Offline Mode ---
-  static getConnectionState(): ConnectionState {
-    try {
-      const state = localStorage.getItem(STORAGE_KEYS.CONNECTION_STATE);
-      return (state as ConnectionState) || 'online';
-    } catch {
-      return 'online';
-    }
+  public static getSyncQueue(): SyncQueueItem[] {
+    // Read from IndexedDB asynchronously or return empty
+    return [];
   }
 
-  static setConnectionState(state: ConnectionState): void {
-    localStorage.setItem(STORAGE_KEYS.CONNECTION_STATE, state);
+  public static async getSyncStatsAsync() {
+    return await syncService.getSyncStats();
   }
 
-  // --- Sync Queue & Cloud Engine ---
-  static getSyncQueue(): SyncQueueItem[] {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.SYNC_QUEUE);
-      return data ? JSON.parse(data) : [];
-    } catch {
-      return [];
-    }
+  public static async performManualSyncAsync() {
+    return await syncService.performSync();
   }
 
-  static enqueueSync(operation: SyncQueueItem['operation'], entity: SyncQueueItem['entity'], entity_id: string, payload: any): void {
-    const queue = this.getSyncQueue();
-    const queueItem: SyncQueueItem = {
-      id: `sq-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-      operation,
-      entity,
-      entity_id,
-      payload,
-      created_at: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
-      synced: false,
-    };
-    queue.push(queueItem);
-    localStorage.setItem(STORAGE_KEYS.SYNC_QUEUE, JSON.stringify(queue));
+  public static async retryFailedSyncAsync() {
+    return await syncService.retryFailedItems();
   }
 
-  static getSyncStats(): { uploaded: number; downloaded: number; lastSync: string } {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.SYNC_STATS);
-      return data ? JSON.parse(data) : { uploaded: 124, downloaded: 87, lastSync: 'امروز ۱۴:۳۲' };
-    } catch {
-      return { uploaded: 124, downloaded: 87, lastSync: 'امروز ۱۴:۳۲' };
-    }
+  public static async clearSyncQueueAsync() {
+    return await syncService.clearQueue();
   }
 
-  static getSyncHistory(): Array<{ time: string; text: string; count: number; success: boolean }> {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.SYNC_HISTORY);
-      return data ? JSON.parse(data) : [
-        { time: '۱۴:۳۲', text: 'همگام‌سازی کامل با پایگاه ابری با موفقیت انجام شد', count: 12, success: true },
-        { time: '۱۳:۵۰', text: 'ارسال ۷ تغییر محلی و دریافت ۳ به‌روزرسانی سرور', count: 7, success: true },
-        { time: '۱۱:۱۵', text: 'اتصال مجدد بعد از قطع پوشش دکل مخابراتی', count: 4, success: true }
-      ];
-    } catch {
-      return [];
-    }
+  // ================= BACKUP & EXPORT =================
+
+  public static async exportAllDataJSONAsync(): Promise<string> {
+    return await exportAllDataJSON();
   }
 
-  static async performManualSync(): Promise<{ syncedCount: number }> {
-    const queue = this.getSyncQueue();
-    const count = queue.length;
-    const nowPersianTime = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
-
-    // Clear queue
-    localStorage.setItem(STORAGE_KEYS.SYNC_QUEUE, JSON.stringify([]));
-
-    // Update stats
-    const stats = this.getSyncStats();
-    const newStats = {
-      uploaded: stats.uploaded + count,
-      downloaded: stats.downloaded + Math.floor(Math.random() * 5),
-      lastSync: `امروز ${nowPersianTime}`,
-    };
-    localStorage.setItem(STORAGE_KEYS.SYNC_STATS, JSON.stringify(newStats));
-
-    // Add to history
-    const history = this.getSyncHistory();
-    history.unshift({
-      time: nowPersianTime,
-      text: count > 0 ? `ارسال ${count} رکورد به سرور و اتمام پردازش صف` : 'بررسی اتصال و تایید انطباق داده‌ها',
-      count,
-      success: true,
-    });
-    localStorage.setItem(STORAGE_KEYS.SYNC_HISTORY, JSON.stringify(history.slice(0, 20)));
-
-    return { syncedCount: count };
-  }
-
-  // --- Export & Backup ---
-  static exportAllDataJSON(): string {
-    const data = {
-      version: '1.0.0',
+  public static exportAllDataJSON(): string {
+    return JSON.stringify({
+      version: 1,
       exported_at: new Date().toISOString(),
-      stores: this.getStores(),
-      visits: this.getVisits(),
-      followups: this.getFollowUps(),
-      syncQueue: this.getSyncQueue(),
-    };
-    return JSON.stringify(data, null, 2);
+      app: 'Visit Field Sales CRM',
+      stores: this.cachedStores,
+      visits: this.cachedVisits,
+      followups: this.cachedFollowUps,
+    }, null, 2);
   }
 
-  static exportStoresCSV(): string {
-    const stores = this.getStores();
-    const headers = ['شناسه', 'نام فروشگاه', 'صاحب فروشگاه', 'موبایل', 'تلفن', 'منطقه', 'آدرس', 'دسته‌بندی', 'وضعیت مشتری', 'تعداد ویزیت', 'آخرین ویزیت'];
-    const rows = stores.map((s) => [
-      s.id,
+  public static async exportStoresCSVAsync(): Promise<string> {
+    return await exportStoresCSV();
+  }
+
+  public static exportStoresCSV(): string {
+    const headers = ['شناسه', 'نام فروشگاه', 'مدیر', 'همراه', 'تلفن', 'صنف', 'منطقه', 'آدرس', 'وضعیت', 'برندها'];
+    const rows = this.cachedStores.map((s) => [
+      `"${s.id}"`,
       `"${s.name}"`,
       `"${s.owner}"`,
-      s.mobile,
-      s.phone,
-      `"${s.area}"`,
-      `"${s.address.replace(/"/g, '""')}"`,
+      `"${s.mobile}"`,
+      `"${s.phone}"`,
       `"${s.category}"`,
-      s.customer_status,
-      s.visit_count || 0,
-      s.last_visit_date || 'ندارد',
+      `"${s.area}"`,
+      `"${s.address}"`,
+      `"${s.customer_status}"`,
+      `"${(s.brands || []).join('، ')}"`,
     ]);
-
-    return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    return [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
   }
 
-  static importBackup(jsonString: string): boolean {
-    try {
-      const data = JSON.parse(jsonString);
-      if (data.stores && Array.isArray(data.stores)) {
-        localStorage.setItem(STORAGE_KEYS.STORES, JSON.stringify(data.stores));
-      }
-      if (data.visits && Array.isArray(data.visits)) {
-        localStorage.setItem(STORAGE_KEYS.VISITS, JSON.stringify(data.visits));
-      }
-      if (data.followups && Array.isArray(data.followups)) {
-        localStorage.setItem(STORAGE_KEYS.FOLLOWUPS, JSON.stringify(data.followups));
-      }
-      return true;
-    } catch {
-      return false;
+  public static async exportVisitsCSVAsync(): Promise<string> {
+    return await exportVisitsCSV();
+  }
+
+  public static async importBackupAsync(jsonString: string): Promise<{ success: boolean; count?: number; error?: string }> {
+    const result = await importBackupJSON(jsonString);
+    if (result.success) {
+      await this.refreshCache();
     }
+    return result;
   }
 
-  static resetToDefault(): void {
-    localStorage.removeItem(STORAGE_KEYS.STORES);
-    localStorage.removeItem(STORAGE_KEYS.VISITS);
-    localStorage.removeItem(STORAGE_KEYS.FOLLOWUPS);
-    localStorage.removeItem(STORAGE_KEYS.SYNC_QUEUE);
+  public static importBackup(jsonString: string): boolean {
+    this.importBackupAsync(jsonString).catch(console.error);
+    return true;
   }
 
-  // Helper for Persian date string
-  static getPersianDateString(date: Date): string {
-    return new Intl.DateTimeFormat('fa-IR', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(date);
+  public static async resetToDefaultAsync(): Promise<void> {
+    await seedInitialData();
+    await this.refreshCache();
+  }
+
+  public static resetToDefault(): void {
+    this.resetToDefaultAsync().catch(console.error);
   }
 }

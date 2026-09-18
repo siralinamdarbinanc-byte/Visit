@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="112" fill="#123C3A"/>
+  <!-- Outer Technical Ring -->
+  <circle cx="256" cy="256" r="190" fill="none" stroke="#255452" stroke-width="6" stroke-dasharray="12 8"/>
+  <circle cx="256" cy="256" r="150" fill="none" stroke="#FAF9F5" stroke-width="4" opacity="0.3"/>
+  
+  <!-- Radar Crosshairs -->
+  <line x1="256" y1="50" x2="256" y2="462" stroke="#FAF9F5" stroke-width="2" opacity="0.25"/>
+  <line x1="50" y1="256" x2="462" y2="256" stroke="#FAF9F5" stroke-width="2" opacity="0.25"/>
+
+  <!-- Compass Cardinal Ticks -->
+  <polygon points="256,76 266,106 246,106" fill="#C96F3B"/>
+  <polygon points="256,436 266,406 246,406" fill="#FAF9F5" opacity="0.6"/>
+  <polygon points="76,256 106,266 106,246" fill="#FAF9F5" opacity="0.6"/>
+  <polygon points="436,256 406,266 406,246" fill="#FAF9F5" opacity="0.6"/>
+
+  <!-- Industrial Gear Shape / Core -->
+  <g fill="#FAF9F5">
+    <circle cx="256" cy="256" r="82" fill="#202426"/>
+    <circle cx="256" cy="256" r="80" fill="#123C3A" stroke="#FAF9F5" stroke-width="4"/>
+  </g>
+
+  <!-- High-Precision Copper Automotive Pin / Beacon -->
+  <path d="M256,160 C216,160 184,192 184,232 C184,284 256,356 256,356 C256,356 328,284 328,232 C328,192 296,160 256,160 Z" fill="#C96F3B" stroke="#FAF9F5" stroke-width="5"/>
+  <circle cx="256" cy="226" r="26" fill="#FAF9F5"/>
+  <circle cx="256" cy="226" r="14" fill="#123C3A"/>
+</svg>

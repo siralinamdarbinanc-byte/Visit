@@ -7,8 +7,10 @@ import {
   ConnectionState,
   UserLocation,
   NavigationTab,
+  StorePhoto,
 } from './types';
 import { FieldStorageService } from './services/storage';
+import { toast } from './hooks/useToast';
 
 // Core Components
 import { HeaderNav } from './components/HeaderNav';
@@ -22,10 +24,13 @@ import { FollowUpScreen } from './components/FollowUpScreen';
 import { ReportsScreen } from './components/ReportsScreen';
 import { SyncCenterScreen } from './components/SyncCenterScreen';
 import { MoreMenuScreen } from './components/MoreMenuScreen';
+import { ToastContainer } from './components/ToastContainer';
 
 // Modals
 import { QuickStoreRegistrationModal } from './components/QuickStoreRegistrationModal';
 import { VisitRecordModal } from './components/VisitRecordModal';
+import { StoreEditModal } from './components/StoreEditModal';
+import { PhotoCaptureModal } from './components/PhotoCaptureModal';
 
 type AppActiveTab = NavigationTab | 'cockpit' | 'reports' | 'sync';
 
@@ -42,6 +47,8 @@ export default function App() {
   // Navigation & Modal Overlays
   const [selectedStore, setSelectedStore] = useState<Store | null>(null);
   const [visitingStore, setVisitingStore] = useState<Store | null>(null);
+  const [editingStore, setEditingStore] = useState<Store | null>(null);
+  const [photoStoreId, setPhotoStoreId] = useState<string | null>(null);
   const [isAddStoreOpen, setIsAddStoreOpen] = useState(false);
   const [mapTargetStore, setMapTargetStore] = useState<Store | null>(null);
 
@@ -89,6 +96,45 @@ export default function App() {
     setIsAddStoreOpen(false);
     refreshData();
     setSelectedStore(created);
+    toast.success(`فروشگاه «${created.name}» با موفقیت ثبت شد.`);
+  };
+
+  // Edit and update store
+  const handleSaveEditedStore = (updatedStore: Store) => {
+    FieldStorageService.saveStore(updatedStore);
+    setEditingStore(null);
+    refreshData();
+    setSelectedStore(updatedStore);
+    toast.success('مشخصات فروشگاه با موفقیت به‌روزرسانی شد.');
+  };
+
+  // Delete store
+  const handleDeleteStore = (storeId: string) => {
+    FieldStorageService.deleteStore(storeId);
+    setEditingStore(null);
+    setSelectedStore(null);
+    refreshData();
+    toast.info('فروشگاه و کلیه سوابق ویزیت آن از پایگاه محلی حذف شد.');
+  };
+
+  // Attach real photo to store
+  const handleSavePhoto = (photo: { url: string; caption?: string; type: StorePhoto['type'] }) => {
+    if (!photoStoreId) return;
+    FieldStorageService.addPhotoToStoreAsync(photoStoreId, photo.url, photo.caption, photo.type);
+    toast.success('تصویر با موفقیت در پرونده فروشگاه الصاق شد.');
+    setPhotoStoreId(null);
+    refreshData();
+    const updated = FieldStorageService.getStores().find((s) => s.id === photoStoreId);
+    if (updated) setSelectedStore(updated);
+  };
+
+  // Remove photo from store
+  const handleRemovePhoto = (storeId: string, photoId: string) => {
+    FieldStorageService.removePhotoFromStore(storeId, photoId);
+    refreshData();
+    const updated = FieldStorageService.getStores().find((s) => s.id === storeId);
+    if (updated) setSelectedStore(updated);
+    toast.info('تصویر با موفقیت حذف گردید.');
   };
 
   // Record visit
@@ -96,6 +142,7 @@ export default function App() {
     FieldStorageService.addVisit(visitData);
     setVisitingStore(null);
     refreshData();
+    toast.success('گزارش ویزیت با موفقیت در پایگاه محلی ثبت شد.');
   };
 
   // Update follow-up status
@@ -113,6 +160,9 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F3F1EA] text-[#202426] flex flex-col font-sans selection:bg-[#C96F3B]/30">
+      {/* Real In-App Toasts Container */}
+      <ToastContainer />
+
       {/* 1. Header Navigation Telemetry Strip */}
       <HeaderNav
         location={userLocation}
@@ -138,19 +188,9 @@ export default function App() {
               setSelectedStore(null);
               handleNavigateToStore(st);
             }}
-            onEditStore={(st: Store) => {
-              alert(`امکان ویرایش مشخصات برای: ${st.name}`);
-            }}
-            onAddPhoto={(storeId: string) => {
-              FieldStorageService.addPhotoToStore(
-                storeId,
-                'https://images.unsplash.com/photo-1517524008697-84bbe3c3fd98?w=600&auto=format&fit=crop&q=80',
-                'تصویر نمای ورودی و تابلوی فروشگاه'
-              );
-              refreshData();
-              const updated = FieldStorageService.getStores().find((s) => s.id === storeId);
-              if (updated) setSelectedStore(updated);
-            }}
+            onEditStore={(st: Store) => setEditingStore(st)}
+            onAddPhoto={(storeId: string) => setPhotoStoreId(storeId)}
+            onRemovePhoto={handleRemovePhoto}
           />
         ) : activeTab === 'cockpit' ? (
           <VisitCockpitMode
@@ -290,6 +330,24 @@ export default function App() {
           userLocation={userLocation}
           onClose={() => setVisitingStore(null)}
           onSaveVisit={handleSaveVisit}
+        />
+      )}
+
+      {editingStore && (
+        <StoreEditModal
+          store={editingStore}
+          userLocation={userLocation}
+          onClose={() => setEditingStore(null)}
+          onSave={handleSaveEditedStore}
+          onDelete={handleDeleteStore}
+        />
+      )}
+
+      {photoStoreId && (
+        <PhotoCaptureModal
+          title="پیوست تصویر به پرونده فروشگاه"
+          onClose={() => setPhotoStoreId(null)}
+          onSavePhoto={handleSavePhoto}
         />
       )}
     </div>

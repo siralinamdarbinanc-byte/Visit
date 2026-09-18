@@ -12,6 +12,7 @@ interface StoreProfileDossierProps {
   onNavigate: (store: Store) => void;
   onEditStore: (store: Store) => void;
   onAddPhoto: (storeId: string) => void;
+  onRemovePhoto?: (storeId: string, photoId: string) => void;
 }
 
 export const StoreProfileDossier: React.FC<StoreProfileDossierProps> = ({
@@ -23,6 +24,7 @@ export const StoreProfileDossier: React.FC<StoreProfileDossierProps> = ({
   onNavigate,
   onEditStore,
   onAddPhoto,
+  onRemovePhoto,
 }) => {
   // Accordion open states (single-hand mobile navigation, default first 2 open)
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
@@ -47,7 +49,7 @@ export const StoreProfileDossier: React.FC<StoreProfileDossierProps> = ({
   const storeVisits = visits.filter((v) => v.store_id === store.id);
   const storeFollowups = followups.filter((f) => f.store_id === store.id);
 
-  // Persian status labels
+  const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
   const getStatusLabel = () => {
     switch (store.customer_status) {
       case 'customer':
@@ -426,17 +428,33 @@ export const StoreProfileDossier: React.FC<StoreProfileDossierProps> = ({
               <div className="grid grid-cols-2 gap-2">
                 {store.photos && store.photos.length > 0 ? (
                   store.photos.map((photo) => (
-                    <div key={photo.id} className="relative rounded border border-[#C4BFB2] overflow-hidden bg-black/5">
+                    <div key={photo.id} className="relative rounded border border-[#C4BFB2] overflow-hidden bg-black/5 group">
                       <img
                         src={photo.url}
                         alt={photo.caption || 'عکس فروشگاه'}
-                        className="w-full h-24 object-cover"
+                        onClick={() => setPreviewPhoto(photo.url)}
+                        className="w-full h-24 object-cover cursor-pointer hover:opacity-90 transition-opacity"
                         referrerPolicy="no-referrer"
                       />
                       {photo.caption && (
                         <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[9px] p-1 truncate">
                           {photo.caption}
                         </div>
+                      )}
+                      {onRemovePhoto && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (window.confirm('آیا از حذف این تصویر اطمینان دارید؟')) {
+                              onRemovePhoto(store.id, photo.id);
+                            }
+                          }}
+                          className="absolute top-1 right-1 bg-rose-600/80 hover:bg-rose-700 text-white text-[10px] w-5 h-5 rounded-full flex items-center justify-center shadow"
+                          title="حذف تصویر"
+                        >
+                          ✕
+                        </button>
                       )}
                     </div>
                   ))
@@ -446,6 +464,24 @@ export const StoreProfileDossier: React.FC<StoreProfileDossierProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* Fullscreen Photo Lightbox Modal */}
+              {previewPhoto && (
+                <div
+                  className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-2"
+                  onClick={() => setPreviewPhoto(null)}
+                >
+                  <div className="relative max-w-lg max-h-[85vh] w-full flex items-center justify-center">
+                    <img src={previewPhoto} alt="تصویر تمام صفحه" className="max-h-[85vh] max-w-full object-contain rounded" />
+                    <button
+                      onClick={() => setPreviewPhoto(null)}
+                      className="absolute top-2 right-2 bg-white text-black rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm shadow"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <button
                 onClick={() => onAddPhoto(store.id)}

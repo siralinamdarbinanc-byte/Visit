@@ -153,6 +153,38 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
             </div>
           </div>
 
+          {/* Quick Data Export Bar */}
+          <div className="bg-[#FAF9F5] border border-[#202426] rounded p-3 space-y-2">
+            <div className="flex items-center justify-between border-b border-[#E6E2D8] pb-1.5 text-xs font-bold text-[#171A1B]">
+              <span>خروجی گرفتن و گزارش‌گیری داده‌ها</span>
+              <span className="text-[10px] text-[#2E6B50] font-bold">CSV / JSON آفلاین</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <button
+                type="button"
+                onClick={async () => {
+                  const { exportStoresToCSV } = await import('../utils/export');
+                  exportStoresToCSV(stores);
+                }}
+                className="p-2 bg-[#EBE8DF] hover:bg-[#D5D0C3] border border-[#C4BFB2] rounded text-right font-semibold text-[#123C3A] flex items-center justify-between"
+              >
+                <span>اکسل فروشگاه‌ها (CSV)</span>
+                <span className="text-sm">📥</span>
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const { exportVisitsToCSV } = await import('../utils/export');
+                  exportVisitsToCSV(visits);
+                }}
+                className="p-2 bg-[#EBE8DF] hover:bg-[#D5D0C3] border border-[#C4BFB2] rounded text-right font-semibold text-[#123C3A] flex items-center justify-between"
+              >
+                <span>اکسل ویزیت‌ها (CSV)</span>
+                <span className="text-sm">📥</span>
+              </button>
+            </div>
+          </div>
+
           {/* Visit Outcomes Breakdown */}
           <div className="bg-[#FAF9F5] border border-[#D5D0C3] rounded p-3 space-y-2">
             <span className="text-xs font-bold text-[#171A1B] block">

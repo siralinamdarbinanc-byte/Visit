@@ -95,7 +95,38 @@ export interface SyncQueueItem {
   entity_id: string;
   payload: any;
   created_at: string;
+  updated_at?: string;
+  retry_count: number;
+  last_error?: string;
+  device_id: string;
   synced: boolean;
+}
+
+export interface SyncHistoryItem {
+  id: string;
+  time: string;
+  text: string;
+  type: 'info' | 'success' | 'warning' | 'error';
+  item_count?: number;
+}
+
+export interface SyncStats {
+  pendingCount: number;
+  failedCount: number;
+  uploaded: number;
+  downloaded: number;
+  lastSync: string;
+  lastError?: string;
+}
+
+export type GPSStatus = 'searching' | 'active' | 'denied' | 'unavailable' | 'timeout';
+
+export interface ToastMessage {
+  id: string;
+  type: 'success' | 'info' | 'warning' | 'error';
+  title?: string;
+  message: string;
+  duration?: number;
 }
 
 export type ConnectionState = 'online' | 'offline' | 'syncing' | 'synced';
@@ -105,8 +136,21 @@ export interface UserLocation {
   longitude: number;
   accuracy: number;
   areaName: string;
-  heading?: number;
-  speed?: number;
+  heading?: number | null;
+  speed?: number | null;
+  timestamp?: number;
+  gpsStatus?: GPSStatus;
 }
 
 export type NavigationTab = 'home' | 'map' | 'stores' | 'visits' | 'more';
+
+export interface NavigationPayload {
+  filter?: string;
+  status?: string;
+  sort?: string;
+  tab?: string;
+  category?: string;
+  area?: string;
+  search?: string;
+  storeId?: string;
+}

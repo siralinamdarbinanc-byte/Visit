@@ -1,6 +1,6 @@
 import { db } from './database';
-import { INITIAL_STORES, INITIAL_VISITS, INITIAL_FOLLOWUPS } from '../data/mockStores';
-import { Store, Visit, FollowUp } from '../types';
+import { INITIAL_STORES, INITIAL_VISITS, INITIAL_FOLLOWUPS, INITIAL_PRODUCTS } from '../data/mockStores';
+import { Store, Visit, FollowUp, ProductItem } from '../types';
 
 /**
  * Checks if the database is initialized, and seeds initial automotive market records if empty.
@@ -13,15 +13,17 @@ export async function ensureDatabaseSeeded(): Promise<void> {
 }
 
 export async function seedInitialData(): Promise<void> {
-  await db.transaction('rw', [db.stores, db.visits, db.followups, db.syncHistory, db.settings], async () => {
+  await db.transaction('rw', [db.stores, db.visits, db.followups, db.products, db.syncHistory, db.settings], async () => {
     await db.stores.clear();
     await db.visits.clear();
     await db.followups.clear();
+    await db.products.clear();
     await db.syncHistory.clear();
 
     await db.stores.bulkAdd(INITIAL_STORES);
     await db.visits.bulkAdd(INITIAL_VISITS);
     await db.followups.bulkAdd(INITIAL_FOLLOWUPS);
+    await db.products.bulkAdd(INITIAL_PRODUCTS);
 
     await db.syncHistory.add({
       id: 'init-sync',

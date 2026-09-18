@@ -11,7 +11,15 @@ import {
   getPersianTimeString,
   getPersianFullDateTime,
 } from '../utils/persian';
-import { exportAllDataJSON, exportStoresCSV, exportVisitsCSV, importBackupJSON } from '../utils/export';
+import {
+  exportAllDataJSON,
+  exportStoresCSV,
+  exportVisitsCSV,
+  importBackupJSON,
+  runCompleteBackupExport,
+  validateBackupJSON,
+  restoreValidatedBackup,
+} from '../utils/export';
 
 // Re-export helper utilities for existing components
 export { toPersianDigits, formatDistance, getPersianDateString, getPersianTimeString, getPersianFullDateTime };
@@ -530,58 +538,41 @@ export class FieldStorageService {
     return await exportAllDataJSON();
   }
 
-  public static exportAllDataJSON(): string {
-    return JSON.stringify({
-      version: 1,
-      exported_at: new Date().toISOString(),
-      app: 'Visit Field Sales CRM',
-      stores: this.cachedStores,
-      visits: this.cachedVisits,
-      followups: this.cachedFollowUps,
-    }, null, 2);
+  public static async triggerBackupDownloadAsync() {
+    return await runCompleteBackupExport();
   }
 
   public static async exportStoresCSVAsync(): Promise<string> {
     return await exportStoresCSV();
   }
 
-  public static exportStoresCSV(): string {
-    const headers = ['شناسه', 'نام فروشگاه', 'مدیر', 'همراه', 'تلفن', 'صنف', 'منطقه', 'آدرس', 'وضعیت', 'برندها'];
-    const rows = this.cachedStores.map((s) => [
-      `"${s.id}"`,
-      `"${s.name}"`,
-      `"${s.owner}"`,
-      `"${s.mobile}"`,
-      `"${s.phone}"`,
-      `"${s.category}"`,
-      `"${s.area}"`,
-      `"${s.address}"`,
-      `"${s.customer_status}"`,
-      `"${(s.brands || []).join('، ')}"`,
-    ]);
-    return [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
-  }
-
   public static async exportVisitsCSVAsync(): Promise<string> {
     return await exportVisitsCSV();
   }
 
-  public static async importBackupAsync(jsonString: string): Promise<{ success: boolean; count?: number; error?: string }> {
-    const result = await importBackupJSON(jsonString);
-    if (result.success) {
-      await this.refreshCache();
-    }
-    return result;
+  public static validateBackup(jsonString: string) {
+    return validateBackupJSON(jsonString);
   }
 
-  public static importBackup(jsonString: string): boolean {
-    this.importBackupAsync(jsonString).catch(console.error);
-    return true;
+  public static async importBackupAsync(jsonString: string): Promise<{ success: boolean; count?: number; error?: string }> {
+    const validation = validateBackupJSON(jsonString);
+    if (!validation.isValid) {
+      return { success: false, error: validation.error };
+    }
+    try {
+      const result = await restoreValidatedBackup(validation.data);
+      await this.refreshCache();
+      this.notifyListeners();
+      return { success: true, count: result.storesCount };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'خطای ذخیره‌سازی در پایگاه داده محلی' };
+    }
   }
 
   public static async resetToDefaultAsync(): Promise<void> {
     await seedInitialData();
     await this.refreshCache();
+    this.notifyListeners();
   }
 
   public static resetToDefault(): void {

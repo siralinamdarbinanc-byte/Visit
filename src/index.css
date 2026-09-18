@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --color-primary: #123C3A;
+    --color-secondary: #202426;
+    --color-bg: #F3F1EA;
+    --color-surface: #FAF9F5;
+    --color-text: #171A1B;
+    --color-muted: #6E7472;
+    --color-accent: #C96F3B;
+    --color-success: #2E6B50;
+    --color-warning: #C28A32;
+    --color-danger: #B94A48;
+    --font-sans: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--color-bg);
+    color: var(--color-text);
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Custom technical automotive styling */
+.font-technical-mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+/* Custom scrollbar for technical density */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #EBE8DF;
+}
+::-webkit-scrollbar-thumb {
+  background: #C4BFB2;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #123C3A;
+}
+
+/* Leaflet dark/technical overlay adjustments */
+.leaflet-container {
+  font-family: var(--font-sans) !important;
+  background-color: #E7E4DC !important;
+  outline: none;
+}
+.leaflet-popup-content-wrapper {
+  background: #FAF9F5 !important;
+  border: 1px solid #202426 !important;
+  border-radius: 4px !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
+}
+.leaflet-popup-tip {
+  background: #FAF9F5 !important;
+}
